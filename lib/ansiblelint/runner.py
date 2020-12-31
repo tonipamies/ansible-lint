@@ -2,14 +2,14 @@
 import logging
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, FrozenSet, Generator, List, Optional, Set, Union
+from typing import Match, TYPE_CHECKING, Any, FrozenSet, Generator, List, Optional, Set, Union
 
-import ansiblelint.file_utils
 import ansiblelint.skip_utils
 import ansiblelint.utils
 from ansiblelint._internal.rules import LoadingFailureRule
 from ansiblelint.errors import MatchError
 from ansiblelint.file_utils import Lintable
+from ansiblelint.rules.AnsibleSyntaxCheckRule import AnsibleSyntaxCheckRule
 
 if TYPE_CHECKING:
     from ansiblelint.rules import RulesCollection
@@ -89,6 +89,8 @@ class Runner(object):
     def run(self) -> List[MatchError]:
         """Execute the linting process."""
         files: List[Lintable] = list()
+        matches: List[MatchError] = list()
+
         for playbook in self.playbooks:
             if self.is_excluded(str(playbook.path)) or playbook.kind == 'role':
                 continue
@@ -96,25 +98,34 @@ class Runner(object):
                 Lintable(
                     ansiblelint.file_utils.normpath(str(playbook.path)),
                     kind=playbook.kind))  # type: ignore
-        matches = set(self._emit_matches(files))
 
-        # remove duplicates from files list
-        files = [value for n, value in enumerate(files) if value not in files[:n]]
-
-        # remove files that have already been checked
-        files = [x for x in files if x.path not in self.checked_files]
+        # doing ansible syntax check
         for file in files:
-            _logger.debug(
-                "Examining %s of type %s",
-                ansiblelint.file_utils.normpath(file.path),
-                file.kind)
-            matches = matches.union(
-                self.rules.run(file, tags=set(self.tags),
-                               skip_list=self.skip_list))
+            matches.extend(AnsibleSyntaxCheckRule._get_ansible_syntax_check_matches(file))
+
+        if not matches:
+
+            matches.extend(self._emit_matches(files))
+
+            # remove duplicates from files list
+            files = [value for n, value in enumerate(files) if value not in files[:n]]
+
+            # remove files that have already been checked
+            files = [x for x in files if x.path not in self.checked_files]
+            for file in files:
+                _logger.debug(
+                    "Examining %s of type %s",
+                    ansiblelint.file_utils.normpath(file.path),
+                    file.kind)
+
+                matches.extend(
+                    self.rules.run(file, tags=set(self.tags),
+                                   skip_list=self.skip_list))
+
         # update list of checked files
         self.checked_files.update([str(x.path) for x in files])
 
-        return sorted(matches)
+        return sorted(list(set(matches)))
 
     def _emit_matches(self, files: List[Lintable]) -> Generator[MatchError, None, None]:
         visited: Set = set()
